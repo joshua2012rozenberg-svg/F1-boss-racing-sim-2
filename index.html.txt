@@ -1,0 +1,338 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>F1 Championship Simulator — Boss View</title>
+<style>
+body { margin:0; font-family:system-ui; display:flex; height:100vh; }
+#left { width:400px; padding:12px; box-sizing:border-box; background:#f5f7fb; border-right:1px solid #e0e6f0; overflow:auto; }
+#canvasWrap { flex:1; display:flex; align-items:center; justify-content:center; background:#eef3fd; }
+canvas { background:transparent; border-radius:8px; box-shadow:0 6px 20px rgba(20,30,60,0.08); }
+h2{margin:6px 0 8px}
+label{display:block; font-size:12px; margin-top:8px; color:#333}
+input[type="text"], input[type="number"], select{width:100%; padding:6px 8px; margin-top:6px; border-radius:6px; border:1px solid #cbd5e1; box-sizing:border-box;}
+.row{display:flex; gap:8px}
+.small{flex:1}
+button{margin-top:10px; padding:8px 10px; border-radius:8px; border:none; background:#2563eb; color:white; cursor:pointer}
+button.secondary{background:#fff; color:#102a43; border:1px solid #cbd5e1}
+.driverCard{background:white; border-radius:8px; padding:8px; margin-top:8px; border:1px solid #eef2ff}
+.muted{color:#667085; font-size:13px}
+.controls{display:flex; gap:8px; margin-top:8px}
+select.small{margin-top:6px;}
+hr{margin:12px 0;border:none;border-top:1px solid #e0e6f0}
+</style>
+</head>
+<body>
+
+<div id="left">
+<h2>F1 Championship — Setup</h2>
+
+<label>Add Driver / Team</label>
+<div class="row">
+<input id="driverName" type="text" placeholder="Driver name" class="small">
+<input id="teamName" type="text" placeholder="Team name" class="small">
+<button id="addDriverBtn">Add</button>
+</div>
+
+<div id="driversList"></div>
+
+<hr>
+
+<label>Select Track</label>
+<select id="trackSelect"></select>
+
+<label>Lap Count<input id="lapCount" type="number" value="10" min="1" max="200"></label>
+<label>Simulation Speed<input id="simSpeed" type="number" value="1" min="0.25" max="8" step="0.25"></label>
+
+<div class="controls">
+<button id="startWeekendBtn">Start Weekend</button>
+<button id="safetyBtn" class="secondary">Toggle Safety Car</button>
+<button id="redFlagBtn" class="secondary">Red Flag</button>
+<button id="resetBtn" class="secondary">Reset</button>
+</div>
+
+<div style="margin-top:12px">
+<strong>Race Status:</strong>
+<div id="status" class="muted">Idle</div>
+</div>
+
+<hr>
+
+<strong>Leaderboard</strong>
+<div id="leaderboard" style="margin-top:8px"></div>
+
+<hr>
+
+<strong>Driver Standings</strong>
+<div id="driverStandings" style="margin-top:8px"></div>
+
+<strong>Team Standings</strong>
+<div id="teamStandings" style="margin-top:8px"></div>
+
+<div style="margin-top:12px; font-size:12px" class="muted">
+Boss View: add drivers, assign teams, pick tracks. Safety car slows cars, red flag stops race. Pit stops take time and change tyres automatically. Tyres affect speed and wear. Points follow F1 system.
+</div>
+
+</div>
+
+<div id="canvasWrap">
+<canvas id="trackCanvas" width="900" height="600"></canvas>
+</div>
+
+<script>
+// ----------------------- CONFIG -----------------------
+const TRACKS = [
+{ name:"Melbourne (Australia)", length:5300 },
+{ name:"Shanghai (China)", length:5450 },
+{ name:"Suzuka (Japan)", length:5800 },
+{ name:"Sakhir (Bahrain)", length:5412 },
+{ name:"Jeddah (Saudi Arabia)", length:6174 },
+{ name:"Miami (USA)", length:5393 },
+{ name:"Imola (Italy)", length:4936 },
+{ name:"Monaco (Street)", length:3840 },
+{ name:"Barcelona (Spain)", length:4655 },
+{ name:"Montreal (Canada)", length:4361 },
+{ name:"Spielberg / Red Bull Ring (Austria)", length:4318 },
+{ name:"Silverstone (UK)", length:5900 },
+{ name:"Spa‑Francorchamps (Belgium)", length:7004 },
+{ name:"Budapest (Hungary)", length:4381 },
+{ name:"Zandvoort (Netherlands)", length:4300 },
+{ name:"Monza (Italy)", length:5793 },
+{ name:"Baku (Azerbaijan)", length:6000 },
+{ name:"Singapore (Street)", length:5061 },
+{ name:"Austin / COTA (USA)", length:5160 },
+{ name:"Mexico City (Mexico)", length:4300 },
+{ name:"São Paulo / Interlagos (Brazil)", length:4309 },
+{ name:"Las Vegas (USA - Street)", length:6073 },
+{ name:"Lusail (Qatar)", length:5380 },
+{ name:"Yas Marina (Abu Dhabi)", length:5271 }
+];
+
+const TYRE_COMPOUNDS = {
+"Hard": { speedMod:0.95, wearRate:0.5 },
+"Medium": { speedMod:1.0, wearRate:1.0 },
+"Soft": { speedMod:1.05, wearRate:1.5 }
+};
+
+const POINTS = [25,18,15,12,10,8,6,4,2,1]; // top 10 points
+
+// ----------------------- STATE -----------------------
+let state = {
+cars: [],
+track:null,
+lapCount:10,
+simSpeed:1,
+running:false,
+safetyCar:false,
+redFlag:false,
+lastTimestamp:null,
+season:{ raceIndex:0, races:[], driverStandings:{}, teamStandings:{} }
+};
+
+// ----------------------- UTILITY -----------------------
+function randColor(seed){
+const h=(seed*137.5)%360;
+return `hsl(${h}deg 70% 60%)`;
+}
+function deepClone(obj){ return JSON.parse(JSON.stringify(obj)); }
+
+// ----------------------- UI -----------------------
+const trackSelect = document.getElementById('trackSelect');
+TRACKS.forEach((t,i)=>{const opt=document.createElement('option'); opt.value=i; opt.text=t.name; trackSelect.appendChild(opt)});
+trackSelect.onchange = ()=> state.track=TRACKS[trackSelect.value];
+state.track = TRACKS[0];
+trackSelect.value = 0;
+
+const driversListEl = document.getElementById('driversList');
+function refreshDriversUI(){
+driversListEl.innerHTML = '';
+state.cars.forEach((car)=>{
+const wrap = document.createElement('div'); wrap.className='driverCard';
+wrap.innerHTML=`<div style="display:flex;gap:8px;align-items:center">
+<div style="width:16px;height:16px;border-radius:4px;background:${car.color}"></div>
+<strong>${car.name}</strong> (${car.team})
+<div style="flex:1"></div>
+<button data-id="${car.id}" class="removeBtn secondary">Remove</button>
+</div>
+<label>Rating<input data-id="${car.id}" class="rating" type="number" min="1" max="100" value="${car.rating}"></label>
+<label>Handling<input data-id="${car.id}" class="handling" type="number" step="0.05" min="0.6" max="1.4" value="${car.handling}"></label>
+<label>Reliability<input data-id="${car.id}" class="reliability" type="number" min="0" max="100" value="${car.reliability}"></label>
+<label>Tyre
+<select data-id="${car.id}" class="compound">
+<option>Hard</option><option selected>Medium</option><option>Soft</option>
+</select>
+</label>`;
+driversListEl.appendChild(wrap);
+});
+}
+
+document.getElementById('addDriverBtn').onclick=()=>{
+const name=document.getElementById('driverName').value.trim()||`Driver ${state.cars.length+1}`;
+const team=document.getElementById('teamName').value.trim()||`Team ${state.cars.length+1}`;
+const id='d'+Date.now().toString(36).slice(-6);
+const color=randColor(state.cars.length+Math.random()*10);
+const rating=80+Math.round(Math.random()*15);
+const handling=+(0.9+Math.random()*0.4).toFixed(2);
+const reliability=85+Math.round(Math.random()*10);
+state.cars.push({id,name,team,color,rating,handling,reliability,pos:0,lap:0,speed:0,dnf:false,tyre:"Medium",tyreWear:0,pitTimer:0});
+refreshDriversUI();
+document.getElementById('driverName').value='';
+document.getElementById('teamName').value='';
+};
+
+// Input listeners
+driversListEl.addEventListener('input',(e)=>{
+const id=e.target.dataset.id; if(!id) return; const car=state.cars.find(c=>c.id===id); if(!car) return;
+if(e.target.classList.contains('rating')) car.rating=Number(e.target.value);
+if(e.target.classList.contains('handling')) car.handling=Number(e.target.value);
+if(e.target.classList.contains('reliability')) car.reliability=Number(e.target.value);
+if(e.target.classList.contains('compound')) car.tyre=e.target.value;
+});
+driversListEl.addEventListener('click',(e)=>{
+if(e.target.classList.contains('removeBtn')){
+const id=e.target.dataset.id;
+state.cars=state.cars.filter(c=>c.id!==id);
+refreshDriversUI();
+}
+});
+
+document.getElementById('lapCount').onchange=(e)=> state.lapCount=Number(e.target.value);
+document.getElementById('simSpeed').onchange=(e)=> state.simSpeed=Number(e.target.value);
+
+// Buttons
+document.getElementById('safetyBtn').onclick=()=>{ state.safetyCar=!state.safetyCar; updateStatus(); };
+document.getElementById('redFlagBtn').onclick=()=>{ state.running=false; state.redFlag=true; updateStatus(); };
+document.getElementById('resetBtn').onclick=()=>{ state.running=false; state.redFlag=false; state.safetyCar=false; state.cars=[]; state.season={raceIndex:0,races:[],driverStandings:{},teamStandings:{}}; refreshDriversUI(); draw(); updateStatus(); updateStandingsUI(); };
+
+// ----------------------- CANVAS -----------------------
+const canvas=document.getElementById('trackCanvas');
+const ctx=canvas.getContext('2d');
+
+// ----------------------- CHAMPIONSHIP -----------------------
+function initSeason(){
+state.season.raceIndex=0;
+state.season.races=deepClone(TRACKS);
+state.season.driverStandings={};
+state.season.teamStandings={};
+state.cars.forEach(c=>{
+state.season.driverStandings[c.name]=0;
+state.season.teamStandings[c.team]=0;
+});
+}
+
+// ----------------------- RACE -----------------------
+function startWeekend(){
+if(state.cars.length<2){ alert('Add at least 2 drivers'); return; }
+initRace(state.season.raceIndex);
+state.running=true;
+state.redFlag=false;
+state.safetyCar=false;
+state.lastTimestamp=null;
+updateStatus();
+requestAnimationFrame(tick);
+}
+
+function initRace(raceIndex){
+const track=state.season.races[raceIndex];
+state.track=track;
+state.cars.forEach((c,i)=>{
+c.pos=(i/(state.cars.length))*track.length;
+c.lap=0; c.speed=0; c.dnf=false; c.tyreWear=0; c.pitTimer=0;
+});
+state.lapCount=10;
+}
+
+function updateStatus(){
+const s=document.getElementById('status');
+if(state.redFlag) s.textContent='Red Flag — Race Stopped';
+else if(state.safetyCar) s.textContent='Safety Car';
+else if(state.running) s.textContent='Race Running';
+else s.textContent='Idle';
+}
+
+function tick(ts){
+if(!state.running){ draw(); return; }
+if(!state.lastTimestamp) state.lastTimestamp=ts;
+const dt=(ts-state.lastTimestamp)/1000*state.simSpeed;
+state.lastTimestamp=ts;
+
+state.cars.forEach(car=>{
+if(car.dnf) return;
+
+// PIT stop if scheduled
+if(car.pitTimer>0){
+car.pitTimer-=dt;
+if(car.pitTimer<=0){ car.tyreWear=0; const comps=Object.keys(TYRE_COMPOUNDS); car.tyre=comps[Math.floor(Math.random()*comps.length)]; }
+car.speed*=0.5; return;
+}
+
+// tyre wear
+const compound=TYRE_COMPOUNDS[car.tyre];
+car.tyreWear+=compound.wearRate*dt*0.1;
+const tyreSpeedMod=Math.max(0.7, compound.speedMod - car.tyreWear*0.001);
+
+// base speed
+let baseSpeed=(car.rating/100)*130;
+let noise=0.9+Math.random()*0.2;
+let speed=baseSpeed*noise*car.handling*tyreSpeedMod;
+if(state.safetyCar) speed=baseSpeed*0.5;
+car.speed=speed;
+car.pos+=speed*dt;
+
+// lap check
+if(car.pos>=state.track.length){ car.pos-=state.track.length; car.lap++;
+// pit decision
+if(car.tyreWear>50+Math.random()*50){ car.pitTimer=3; } // pit lasts 3s
+}
+
+// reliability
+const failProb=(50-car.reliability)/10000;
+if(Math.random()<failProb*dt){ car.dnf=true; }
+});
+
+// sorting for leaderboard
+const dist=c=>c.lap*state.track.length+c.pos;
+state.cars.sort((a,b)=> (b.dnf?-1:dist(b))-(a.dnf?-1:dist(a)));
+
+// end of race
+const finished=state.cars.filter(c=>!c.dnf&&c.lap>=state.lapCount);
+if(finished.length>0){
+const unfinished=state.cars.filter(c=>!c.dnf&&c.lap<state.lapCount);
+if(unfinished.length===0){ finishRace(); state.running=false; updateStatus(); draw(); return; }
+}
+
+draw();
+updateLeaderboard();
+requestAnimationFrame(tick);
+}
+
+function finishRace(){
+const dist=c=>c.lap*state.track.length+c.pos;
+const sorted=state.cars.filter(c=>!c.dnf).sort((a,b)=>dist(b)-dist(a));
+sorted.forEach((c,i)=>{ if(i<POINTS.length) state.season.driverStandings[c.name]+=POINTS[i]; state.season.teamStandings[c.team]+=(i<POINTS.length?POINTS[i]:0); });
+updateStandingsUI();
+state.season.raceIndex++;
+}
+
+function draw(){
+const w=canvas.width, h=canvas.height;
+ctx.clearRect(0,0,w,h);
+const cx=w/2, cy=h/2, r=220;
+
+// track
+ctx.fillStyle='#dfe9fb'; ctx.beginPath(); ctx.arc(cx,cy,r+80,0,Math.PI*2); ctx.fill();
+ctx.fillStyle='#2b3a67'; ctx.beginPath(); ctx.arc(cx,cy,r+40,0,Math.PI*2); ctx.arc(cx,cy,r-40,0,Math.PI*2,true); ctx.fill();
+
+// cars
+state.cars.forEach(c=>{
+const dist=(c.lap*state.track.length+c.pos)%state.track.length;
+const angle=(dist/state.track.length)*Math.PI*2-Math.PI/2;
+const x=cx+Math.cos(angle)*r, y=cy+Math.sin(angle)*r;
+ctx.save(); ctx.translate(x,y); ctx.rotate(angle+Math.PI/2);
+ctx.fillStyle=c.color; ctx.strokeStyle='#000';
+ctx.fillRect(-7,-4,14,8); ctx.strokeRect(-7,-4,14,8);
+ctx.restore();
+ctx.fillStyle='#fff'; ctx.font='12px system-ui'; ctx.textAlign='center';
+ctx.fillText(c.name,x,y-20); ctx.fillText(`Tyre:${c.tyre}`,x,y+16);
+if(c.dnf){ ctx.fillStyle='rgba(0,0,0,0.6)'; ctx.font='bold 12px system-ui'; ctx.fillText
